@@ -1,5 +1,6 @@
 #include "mesh.hh"
 
+// Generation and storage of all mesh parameters based on points, faces, cells and boundaries
 Mesh::Mesh(std::string point_file, std::string face_file, std::string cell_file, std::string boundary_file)
 {
    list_of_all_points = Point::obtain_list_of_all_points(point_file);

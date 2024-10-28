@@ -26,6 +26,7 @@ Face::Face(std::vector<Point> list_of_points_for_this_face)
    calculate_face_centre();
 }
 
+// Face Area Calculation
 void Face::calculate_face_area()
 {
     
@@ -66,6 +67,7 @@ void Face::calculate_face_area()
     }
 }
 
+// Face Normal Computation
 void Face::calculate_face_normal()
 {
     Vector naive_centroid;
@@ -100,6 +102,7 @@ void Face::calculate_face_normal()
 
 }
 
+// Face Centre Computation
 void Face::calculate_face_centre()
 {
     Vector naive_centroid;
@@ -145,7 +148,7 @@ void Face::calculate_face_centre()
 
 }
 
-
+//Function to Read data from file and store it to be used further in code
 std::vector<Face> Face::generate_list_of_all_faces(std::string file_name, std::vector<Point> list_of_all_points)
 {   
     std::string single_line;

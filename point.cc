@@ -35,7 +35,7 @@ int Point::return_number_of_points() const
   return number_of_points;
 }
 
-
+//Function to Read data from file and store it to be used further in code
 std::vector<Point> Point::obtain_list_of_all_points(std::string file_name)
 {  
    

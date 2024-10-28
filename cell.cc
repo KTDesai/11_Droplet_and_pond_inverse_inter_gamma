@@ -24,6 +24,8 @@ Cell::Cell(std::vector<Face*> list_of_all_faces_for_this_cell)
 }
 
 
+//Cell Volume Computation
+
 void Cell::calculate_cell_volume()
 {
    double cell_volume_temp = 0;  
@@ -72,7 +74,7 @@ void Cell::calculate_cell_volume()
    }
 }
 
-
+//Cell Centre Computation
 void Cell::calculate_cell_centre()
 {   
     Vector cell_naive_centroid;
@@ -127,6 +129,7 @@ void Cell::calculate_cell_centre()
         cell_centre = sigma_aivi/cell_volume;
 }
 
+// Setting owner and neighbour indices for faces
 void Cell::set_owner_neighbour_index_for_faces()
 {
    for(int i=0; i<list_of_all_faces_for_this_cell.size(); i++)
@@ -173,6 +176,7 @@ void Cell::assign_cell_neighbours()
     }
 }
 
+//Function to Read data from file and store it to be used further in code
 std::vector<Cell> Cell::generate_list_of_all_cells(std::string file_name, std::vector<Face> &list_of_all_faces)
 {
     std::string single_line;

@@ -2,6 +2,7 @@
 #define PV_COUPLING_HH
 
 #include<Eigen/Dense>
+#include<Eigen/Sparse>
 #include<vector>
 #include<cmath>
 
@@ -11,6 +12,8 @@
 #include "scalar_boundary_field.hh"
 #include "vector_boundary_field.hh"
 #include "vector_field.hh"
+
+typedef Eigen::SparseMatrix<double, Eigen::RowMajor> SpMat;
 
 class PV_coupling
 {
@@ -107,10 +110,10 @@ class PV_coupling
   void velocity_compute_diffusion_matrix(std::vector<Face>&, std::vector<Boundary>&, Vector_boundary_field&);
   void velocity_compute_convection_matrix(std::vector<Face>&, std::vector<Boundary>&, Vector_boundary_field&);
   void velocity_under_relaxation(std::vector<Cell>&, double&);
-  void velocity_solve_matrices();
+  void velocity_solve_matrices(std::vector<Cell> );
 
-  void velocity_calculate_initial_residuals(std::vector<double>&, std::vector<double>&, int&, std::ofstream &, std::ofstream &);
-  void velocity_calculate_final_residuals(std::vector<double>&, std::vector<double>&, int&, std::ofstream &, std::ofstream &);
+  void velocity_calculate_initial_residuals(std::vector<double>&, std::vector<double>&, int&, int&, std::ofstream &, std::ofstream &);
+  void velocity_calculate_final_residuals(std::vector<double>&, std::vector<double>&, int&, int&, std::ofstream &, std::ofstream &);
 
   std::vector<double> velocity_store_ap_coefficients();
 
@@ -156,8 +159,8 @@ class PV_coupling
 
   void pressure_under_relax();
 
-  void pressure_calculate_initial_residuals_p(std::vector<double>&, std::vector<double>&, int&, std::ofstream &);
-  void pressure_calculate_final_residuals_p(std::vector<double>&, std::vector<double>&, int&,  std::ofstream &);
+  void pressure_calculate_initial_residuals_p(std::vector<double>&, std::vector<double>&, int&, int&, std::ofstream &);
+  void pressure_calculate_final_residuals_p(std::vector<double>&, std::vector<double>&, int&, int&,  std::ofstream &);
 
   void pressure_compute_flux_correction(std::vector<Cell>&, std::vector<Face>&, std::vector<double>&, std::vector<Boundary>&);
   void pressure_compute_velocity_correction_terms(std::vector<Cell>&, std::vector<double>&, std::vector<double>&, std::vector<Boundary>);
@@ -190,7 +193,7 @@ class PV_coupling
   void alpha_rate_of_change_discretization(std::vector<Cell>&, double&);
   void alpha_convection_discretization(std::vector<Face>&, std::vector<Boundary>&, Scalar_boundary_field&, Vector_boundary_field&, std::vector<Cell> &);
 
-  void alpha_combine_and_solve_matrices();
+  void alpha_combine_and_solve_matrices(std::vector<Cell> list_of_cells);
 
   void alpha_update_rho_nu(std::vector<Cell>&, double&, double&, double&, double&, double&, double&);
 

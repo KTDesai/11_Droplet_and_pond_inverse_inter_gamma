@@ -35,6 +35,7 @@ void Boundary::set_boundary_faces()
     }
 }
 
+//Function to Read data from file and store it to be used further in code
 std::vector<Boundary> Boundary:: generate_list_of_all_boundary_faces(std::string filename, std::vector<Face> &list_of_all_faces)
 {
     

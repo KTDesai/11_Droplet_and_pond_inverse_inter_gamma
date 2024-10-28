@@ -2,6 +2,9 @@
 #include<iostream>
 #include<fstream>
 #include <vector>
+#include <Eigen/IterativeLinearSolvers>
+#include <Eigen/Dense>
+#include <Eigen/Sparse>
 
 PV_coupling::PV_coupling(int no_of_cells, double nu_value, double initial_pressure, double initial_alpha, double initial_rho, double initial_mu, Vector initial_velocity): nu(no_of_cells), velocity(no_of_cells), pressure(no_of_cells), alpha(no_of_cells), rho(no_of_cells), mu(no_of_cells)
 {
@@ -202,6 +205,7 @@ void PV_coupling::velocity_combine_b_matrices()
     }
 }
 
+// Momentum Predictor - Temporal Derivitive Term Discretization 
  void PV_coupling::velocity_compute_rate_of_change_matrix(std::vector<Cell> &list_of_cells, double &delta_time)                                                               
  {
       velocity_reset_rate_of_change();  
@@ -225,7 +229,7 @@ void PV_coupling::velocity_combine_b_matrices()
       }
  } 
 
-
+// Velocity Under-relaxation
 void PV_coupling::velocity_under_relaxation(std::vector<Cell> &list_of_cells, double &alpha)                                                               
  {  
     double alpha_source_factor = (1 - alpha)/alpha ;
@@ -238,7 +242,7 @@ void PV_coupling::velocity_under_relaxation(std::vector<Cell> &list_of_cells, do
     }
  }  
 
-
+// Momentum Predictor - Diffusion Term Discretization 
 void PV_coupling::velocity_compute_diffusion_matrix(std::vector<Face> &list_of_faces, std::vector<Boundary> &list_of_boundaries, Vector_boundary_field &velocity_boundary)                                                               
  { 
       velocity_reset_diffusion(); 
@@ -323,6 +327,7 @@ void PV_coupling::velocity_compute_diffusion_matrix(std::vector<Face> &list_of_f
  }
 
 
+// Momentum Predictor - Convection Term Discretization 
 void PV_coupling::velocity_compute_convection_matrix(std::vector<Face> &list_of_faces, std::vector<Boundary> &list_of_boundaries, Vector_boundary_field &velocity_boundary)                                                               
  { 
       velocity_reset_convection();  
@@ -450,11 +455,11 @@ void PV_coupling::velocity_compute_convection_matrix(std::vector<Face> &list_of_
         }
     }  
 
-
-void PV_coupling::velocity_calculate_initial_residuals(std::vector<double> &x_distance, std::vector<double> &y_distance, int &n, std::ofstream &sum_initial_residual_ux, 
+// Velocity - Initial Residuals
+void PV_coupling::velocity_calculate_initial_residuals(std::vector<double> &x_distance, std::vector<double> &y_distance, int &iteration_number, int &output_interval, std::ofstream &sum_initial_residual_ux, 
                                                std::ofstream &sum_initial_residual_uy)
 { 
-   if(n == 199)
+   if((iteration_number % output_interval) == 0)
   { 
    std::ofstream file_initial_residuals_ux("initial_residuals_ux.txt");
    std::ofstream file_initial_residuals_uy("initial_residuals_uy.txt");
@@ -486,27 +491,50 @@ void PV_coupling::velocity_calculate_initial_residuals(std::vector<double> &x_di
      sum_r_uy = sum_r_uy + velocity_initial_residuals_uy(i);
   } 
 
-  sum_initial_residual_ux<<n<<"\t"<<sum_r_ux<<std::endl;
-  sum_initial_residual_uy<<n<<"\t"<<sum_r_ux<<std::endl;
+  sum_initial_residual_ux<<iteration_number<<"\t"<<sum_r_ux<<std::endl;
+  sum_initial_residual_uy<<iteration_number<<"\t"<<sum_r_ux<<std::endl;
  
 }    
 
-
-void PV_coupling::velocity_solve_matrices()
+// Solving Momentum Predictor
+void PV_coupling::velocity_solve_matrices(std::vector<Cell> list_of_cells)
 {
-    // velocity.vector_field_values_x = velocity_a_matrix_combined.lu().solve(velocity_b_vector_combined_ux);
-    // velocity.vector_field_values_y = velocity_a_matrix_combined.lu().solve(velocity_b_vector_combined_uy);
+   int size = list_of_cells.size();
 
-    velocity.vector_field_values_x = velocity_a_matrix_combined.fullPivHouseholderQr().solve(velocity_b_vector_combined_ux);
-    velocity.vector_field_values_y = velocity_a_matrix_combined.fullPivHouseholderQr().solve(velocity_b_vector_combined_uy);
+    SpMat Au(size, size);
+
+    Au.reserve(Eigen::VectorXi::Constant(size,5));
+    for(int row=0; row<size; row++)
+    {
+      for(int col = 0; col < size; col++ )
+      {
+        if(fabs(velocity_a_matrix_combined(row,col)) > 1e-10)
+        {
+           Au.insert(row,col) = velocity_a_matrix_combined(row,col);
+        }
+      }
+    }
+
+    // Conversion to Compressed Row Format 
+    Au.makeCompressed();
+
+    // Using Sparse Matrix Solver by Bi-Conjugate Gradient Method
+    Eigen::BiCGSTAB<SpMat> solver;
+    solver.setTolerance(1e-10);
+    solver.compute(Au);
+
+
+    velocity.vector_field_values_x = solver.solve(velocity_b_vector_combined_ux);  
+     
+    velocity.vector_field_values_y = solver.solve(velocity_b_vector_combined_uy);      
 
     velocity.set_old_vector_field_values();
 }  
 
-
-void PV_coupling::velocity_calculate_final_residuals(std::vector<double> &x_distance, std::vector<double> &y_distance, int &n, std::ofstream &sum_final_residual_ux, std::ofstream &sum_final_residual_uy)
+// Velocity - Final Residuals
+void PV_coupling::velocity_calculate_final_residuals(std::vector<double> &x_distance, std::vector<double> &y_distance, int &iteration_number, int &output_interval, std::ofstream &sum_final_residual_ux, std::ofstream &sum_final_residual_uy)
 {
-   if(n==199)
+   if((iteration_number % output_interval) ==0)
  {  
    std::ofstream file_final_residuals_ux("final_residuals_ux.txt");
    std::ofstream file_final_residuals_uy("final_residuals_uy.txt");
@@ -539,9 +567,10 @@ void PV_coupling::velocity_calculate_final_residuals(std::vector<double> &x_dist
      sum_r_uy = sum_r_uy + velocity_final_residuals_uy(i);
   } 
 
-  sum_final_residual_ux<<n<<"\t"<<sum_r_ux<<std::endl;
-  sum_final_residual_uy<<n<<"\t"<<sum_r_ux<<std::endl;
+  sum_final_residual_ux<<iteration_number<<"\t"<<sum_r_ux<<std::endl;
+  sum_final_residual_uy<<iteration_number<<"\t"<<sum_r_ux<<std::endl;
 }   
+
 
 void PV_coupling::velocity_set_face_and_cell_fluxes(std::vector<Cell> &list_of_cells, std::vector<Face> &list_of_faces, std::vector<Boundary> &list_of_boundaries, Vector_boundary_field &velocity_boundary)
 {
@@ -595,7 +624,8 @@ void PV_coupling::velocity_set_face_and_cell_fluxes(std::vector<Cell> &list_of_c
         }
 }
 
-
+// Momentum Predictor - Source Matrix (Gravity Term)
+// g =  +9.81 for inverting the direction of gravity
 void PV_coupling::velocity_compute_source_matrix(std::vector<Cell> &list_of_cells)                                                               
  {  
     velocity_reset_source(); 
@@ -605,7 +635,7 @@ void PV_coupling::velocity_compute_source_matrix(std::vector<Cell> &list_of_cell
         int cell_index = list_of_cells[i].get_cell_index();
 
         double cell_volume = list_of_cells[i].get_cell_volume();
-        double gravity_constant = -9.81; 
+        double gravity_constant = 9.81; 
         double cell_density = rho.scalar_field_values(cell_index);
 
         double gravity_source_term_ux = 0.0;
@@ -630,6 +660,7 @@ std::vector<double> PV_coupling::velocity_store_ap_coefficients()
 }
 
 
+// Velocity Correction
   void PV_coupling::velocity_correct_cell_centre_velocities(std::vector<Cell> &list_of_cells, Vector_field &grad_p , std::vector<double> &temp_ap_coeffs)
   {
      for(int i=0; i<list_of_cells.size(); i++)
@@ -639,7 +670,8 @@ std::vector<double> PV_coupling::velocity_store_ap_coefficients()
     }
   }
 
-  void PV_coupling::velocity_compute_div_u(std::vector<Cell> &list_of_cells, int &n_cells, std::vector<Face> &list_of_faces)                                                               
+// Div u computation to check divergence of simulation
+void PV_coupling::velocity_compute_div_u(std::vector<Cell> &list_of_cells, int &n_cells, std::vector<Face> &list_of_faces)                                                               
  {  
     std::vector<double> div_u;
     div_u.resize(n_cells);
@@ -676,7 +708,7 @@ std::vector<double> PV_coupling::velocity_store_ap_coefficients()
       }
  } 
 
-
+//Output Matrix coefficients of discretized momentum predictor
 void PV_coupling::velocity_output_vector_matrix_coefficients_to_file(double total_cells)
 {
      std::ofstream convection_coeffs_a("vel_convection_coeffs_a.txt");
@@ -753,96 +785,7 @@ void PV_coupling::velocity_output_vector_matrix_coefficients_to_file(double tota
 }
 
 
-void PV_coupling::velocity_output_vector_field_to_file(std::vector<double> x_distance, std::vector<double> y_distance)
-{
-     std::ofstream vector_field_profiles_x("velocity_field_x.txt");
-
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {  
-                vector_field_profiles_x<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<velocity.vector_field_values_x(j + i*x_distance.size())<<std::endl;
-              }
-         }
-
-        std::ofstream vector_field_profiles_y("velocity_field_y.txt");
-
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                vector_field_profiles_y<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<velocity.vector_field_values_y(j + i*x_distance.size())<<std::endl;
-              }
-         }
-
-        std::ofstream vector_field_profiles_xy("velocity_magnitude.txt");
-
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                 double vx = velocity.vector_field_values_x(j + i*x_distance.size());
-                 double vy = velocity.vector_field_values_y(j + i*x_distance.size());
-                 double v_mag = sqrt(vx*vx +  vy*vy);
-
-                vector_field_profiles_xy<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<v_mag<<std::endl;
-              }
-         }
-
-
-        std::ofstream vx_horizontal("vx_horizontal.txt");
-
-        for(int j=0; j<x_distance.size(); j++)
-         {
-            vx_horizontal<<x_distance[j]<<"\t"<< velocity.vector_field_values_x(((y_distance.size()/2) - 1.0)*x_distance.size() + j)<<std::endl;
-         }
-
-
-        std::ofstream vx_vertical("vx_vertical.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-            vx_vertical<<velocity.vector_field_values_x((x_distance.size()/2) + i*x_distance.size())<<"\t"<<y_distance[i]<<std::endl;
-         }
-
-
-        std::ofstream vy_horizontal("vy_horizontal.txt");
-
-        for(int j=0; j<x_distance.size(); j++)
-         {
-            vy_horizontal<<x_distance[j] <<"\t" <<velocity.vector_field_values_y(((y_distance.size()/2) - 1.0)*x_distance.size() + j)<<std::endl;
-         }
-
-        std::ofstream vy_vertical("vy_vertical.txt") ;
-
-        for(int i=0; i<y_distance.size(); i++)
-         {
-            vy_vertical<<y_distance[i]<<"\t"<< velocity.vector_field_values_y((x_distance.size()/2) + i*x_distance.size())<<std::endl;
-         }
-
-         std::ofstream vector_plots("vector_plots.txt");
-
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                 double vx = velocity.vector_field_values_x(j + i*x_distance.size());
-                 double vy = velocity.vector_field_values_y(j + i*x_distance.size());
-                 double v_mag = sqrt(vx*vx +  vy*vy);
-
-                vector_plots<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<pressure.scalar_field_values(j + i*x_distance.size())<<"\t"<<vx/v_mag<<"\t"<<vy/v_mag<<std::endl;
-              }
-         }
-
-
-        vector_field_profiles_x.close();
-        vector_field_profiles_y.close();
-        vector_field_profiles_xy.close();
-        vector_plots.close();
-        vx_horizontal.close();
-        vx_vertical.close();
-        vy_horizontal.close();
-        vy_vertical.close();
-} 
+//Momemtum Predictor - Initial Convergence Ux
 
 void PV_coupling::velocity_plot_convergence_initial_x(std::ofstream &x_velocity_convergence_initial, int &iteration_no)
 {   
@@ -870,6 +813,9 @@ void PV_coupling::velocity_plot_convergence_initial_x(std::ofstream &x_velocity_
      x_velocity_convergence_initial<<iteration_no<<"\t"<<max<<"\t"<<std::endl;
 }
 
+
+//Momemtum Predictor - Initial Convergence Uy
+
 void PV_coupling::velocity_plot_convergence_initial_y(std::ofstream &y_velocity_convergence_initial, int &iteration_no)
 {
     Eigen::VectorXd difference = (velocity.vector_field_values_y - velocity.vector_old_field_values_y);
@@ -895,6 +841,7 @@ void PV_coupling::velocity_plot_convergence_initial_y(std::ofstream &y_velocity_
 
 }
 
+//Momemtum Predictor - Final Convergence Ux
 
 void PV_coupling::velocity_plot_convergence_final_x(std::ofstream &x_velocity_convergence_final, int &iteration_no)
 {
@@ -920,6 +867,8 @@ void PV_coupling::velocity_plot_convergence_final_x(std::ofstream &x_velocity_co
      x_velocity_convergence_final<<iteration_no<<"\t"<<max<<std::endl;
 }
 
+
+//Momemtum Predictor - Final Convergence Uy
 
 void PV_coupling::velocity_plot_convergence_final_y(std::ofstream &y_velocity_convergence_final, int &iteration_no)
 {
@@ -1026,6 +975,9 @@ void PV_coupling::pressure_combine_a_and_b_matrices()
     }
 }
 
+
+// Pressure Corrector - Source Matrix Computation
+
 void PV_coupling::pressure_compute_source_matrix(std::vector<Cell> &list_of_cells, std::vector<Face> &list_of_faces)                                                               
  {  
     pressure_reset_source(); 
@@ -1053,6 +1005,8 @@ void PV_coupling::pressure_compute_source_matrix(std::vector<Cell> &list_of_cell
         } 
     }
  } 
+
+ // Pressure Corrector - Diffusion Matrix Computation
 
 void PV_coupling::pressure_compute_diffusion_matrix(std::vector<Face> &list_of_faces,  std::vector <double> &ap_coeff, std::vector<Boundary> &list_of_boundaries, int &iteration_no, Scalar_boundary_field &pressure_boundary)                                                              
  { 
@@ -1133,9 +1087,10 @@ void PV_coupling::pressure_compute_diffusion_matrix(std::vector<Face> &list_of_f
  } 
     
 
-void PV_coupling::pressure_calculate_initial_residuals_p(std::vector<double> &x_distance, std::vector<double> &y_distance, int &n, std::ofstream &sum_initial_residual_p)
+// Initial Pressure Residuals
+void PV_coupling::pressure_calculate_initial_residuals_p(std::vector<double> &x_distance, std::vector<double> &y_distance, int &iteration_number, int &output_interval, std::ofstream &sum_initial_residual_p)
 {
-     if(n == 199)
+     if((iteration_number % output_interval) == 0)
   { 
    std::ofstream file_initial_residuals_p("pressure_initial_residuals.txt");
 
@@ -1162,30 +1117,54 @@ void PV_coupling::pressure_calculate_initial_residuals_p(std::vector<double> &x_
      sum_r_p = sum_r_p + pressure_initial_residuals_p(i);
   } 
 
-  sum_initial_residual_p<<n<<"\t"<<sum_r_p<<std::endl;
+  sum_initial_residual_p<<iteration_number<<"\t"<<sum_r_p<<std::endl;
 
 }
         
 void PV_coupling::pressure_combine_and_solve_matrices(std::vector<Cell> &list_of_cells)
 {
     pressure_combine_a_and_b_matrices();
-    int size = list_of_cells.size();
 
-    pressure.scalar_field_values = pressure_a_matrix_combined.fullPivHouseholderQr().solve(pressure_b_vector_combined);
+    int size = list_of_cells.size();
+    SpMat A(size, size);
+    A.reserve(Eigen::VectorXi::Constant(size,5));
+    for(int row=0; row<size; row++)
+    {
+      for(int col = 0; col < size; col++ )
+      {
+        if(fabs(pressure_a_matrix_combined(row,col)) > 1e-12)
+        {
+           A.insert(row,col) = pressure_a_matrix_combined(row,col);
+        }
+      }
+    }
+
+    // Converting to compressed row format
+    A.makeCompressed();
+
+    // Solving using Bi-conjugate gradient method
+    Eigen::ConjugateGradient<SpMat, Eigen::Lower|Eigen::Upper> cg;
+    cg.setTolerance(1e-10);
+    cg.compute(A);
+    pressure.scalar_field_values = cg.solve(pressure_b_vector_combined);
 
     pressure.set_old_scalar_field_values();
 
 }
 
 
+// Pressure under-relaxation
 void PV_coupling::pressure_under_relax()
 {
     pressure.scalar_field_values = pressure.scalar_old_field_values + (0.7) * (pressure.scalar_field_values - pressure.scalar_old_field_values); 
 } 
 
-void PV_coupling::pressure_calculate_final_residuals_p(std::vector<double> &x_distance, std::vector<double> &y_distance, int &n, std::ofstream &sum_final_residual_p)
+
+//Pressure Final Residuals
+
+void PV_coupling::pressure_calculate_final_residuals_p(std::vector<double> &x_distance, std::vector<double> &y_distance, int &iteration_number, int &output_interval, std::ofstream &sum_final_residual_p)
 {
-  if(n == 199)
+  if((iteration_number % output_interval) == 0)
   { 
    std::ofstream file_final_residuals_p("pressure_final_residuals.txt");
 
@@ -1212,9 +1191,10 @@ void PV_coupling::pressure_calculate_final_residuals_p(std::vector<double> &x_di
      sum_r_p = sum_r_p + pressure_final_residuals_p(i);
   } 
 
-  sum_final_residual_p<<n<<"\t"<<sum_r_p<<std::endl;
+  sum_final_residual_p<<iteration_number<<"\t"<<sum_r_p<<std::endl;
 }
 
+//Pressure corrector - Flux Correction
 void PV_coupling::pressure_compute_flux_correction(std::vector<Cell> &list_of_cells, std::vector<Face> &list_of_faces, std::vector<double> &temp_ap_coeffs, std::vector<Boundary> &list_of_boundaries)
 {        
    double ap_face, grad_p_face, new_face_flux_value, f_corr, test_val = 0.0;
@@ -1269,10 +1249,9 @@ void PV_coupling::pressure_compute_flux_correction(std::vector<Cell> &list_of_ce
    }
 }
 
-
-
-
           
+// Pressure Corrector- Matrix coefficients
+
 void PV_coupling::pressure_output_scalar_matrix_coefficients_to_file(double total_cells)
 {
      std::ofstream pressure_convection_coeffs_a("pressure_convection_coeffs_a.txt");
@@ -1331,38 +1310,7 @@ void PV_coupling::pressure_output_scalar_matrix_coefficients_to_file(double tota
 }
 
 
-void PV_coupling::pressure_output_scalar_field_to_file(std::vector<double> x_distance, std::vector<double> y_distance, std::vector<Cell> list_of_cells)
-{
-     std::ofstream scalar_field_profiles("pressure.txt");
-     std::ofstream scalar_field_profiles_volume("Pressure_vol.txt");
-     std::ofstream pressure_x_line("pressure_x_line.txt");
-     std::ofstream pressure_y_line("pressure_y_line.txt");
-
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                scalar_field_profiles_volume<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<pressure.scalar_field_values(j + i*x_distance.size())/cell_v<<std::endl;
-                scalar_field_profiles<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<pressure.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-
-        for(int j=0; j<x_distance.size(); j++)
-         {
-            pressure_x_line<<x_distance[j]<<"\t"<< pressure.scalar_field_values(((y_distance.size()/2) - 1.0)*x_distance.size() + j)<<std::endl;
-         }
-
-         for(int i=0; i<y_distance.size(); i++)
-         {
-            pressure_y_line<<y_distance[i]<<"\t"<<pressure.scalar_field_values((x_distance.size()/2) + i*x_distance.size())<<std::endl;
-         }
-
-        scalar_field_profiles.close();
-        pressure_x_line.close();
-        pressure_y_line.close();
-}     
-                
+ // Pressure Corrector - Initial convergence               
  void PV_coupling::pressure_plot_convergence_initial(std::ofstream &plot_convergence_initial_h, int &iteration_no)
  {
     Eigen::VectorXd difference = (pressure.scalar_field_values - pressure.scalar_old_field_values);
@@ -1393,7 +1341,8 @@ Scalar_field PV_coupling::retrieve_pressure_field()
  } 
 
 
- void PV_coupling::set_alpha_scalar_initial_fields(std::vector<Cell> &list_of_cells, double &rho_1, double &rho_2, double &nu_1, double &nu_2, double &mu_1, double &mu_2, double &x_max, double &y_max)
+// Setting Initial Phase Faraction Fields (Like setfields from 'interFoam')
+void PV_coupling::set_alpha_scalar_initial_fields(std::vector<Cell> &list_of_cells, double &rho_1, double &rho_2, double &nu_1, double &nu_2, double &mu_1, double &mu_2, double &x_max, double &y_max)
 {
     std::ofstream plot_initial_alpha("initial_alpha.txt");
     std::ofstream plot_initial_nu("initial_nu.txt");
@@ -1402,7 +1351,8 @@ Scalar_field PV_coupling::retrieve_pressure_field()
 
     for(int i=0; i<list_of_cells.size(); i++)
     {
-         Vector distance = list_of_cells[i].get_cell_centre();
+     
+        Vector distance = list_of_cells[i].get_cell_centre();
 
         double x = distance[0];
         double y = distance[1];
@@ -1416,9 +1366,7 @@ Scalar_field PV_coupling::retrieve_pressure_field()
         {
             alpha.scalar_field_values(i) = 0.0;
         }
-
         
-
         rho.scalar_field_values(i) = alpha.scalar_field_values(i) * rho_1 + ((1 - (alpha.scalar_field_values(i))) * rho_2);
         nu.scalar_field_values(i) = alpha.scalar_field_values(i) * nu_1 + ((1 - alpha.scalar_field_values(i)) * nu_2);
         mu.scalar_field_values(i) = alpha.scalar_field_values(i) * mu_1 + ((1 - alpha.scalar_field_values(i)) * mu_2);
@@ -1499,6 +1447,8 @@ void PV_coupling::alpha_combine_a_and_b_matrices()
     }
 }
 
+
+// Phase Fraction Continuity - Temporal Derivative Term
  void PV_coupling::alpha_rate_of_change_discretization(std::vector<Cell> &list_of_cells, double &delta_time)                                                               
  {
       alpha_reset_rate_of_change();  
@@ -1517,6 +1467,8 @@ void PV_coupling::alpha_combine_a_and_b_matrices()
       }
  } 
 
+
+// Phase Fraction Continuity - Convection Term
  void PV_coupling::alpha_convection_discretization(std::vector<Face> &list_of_faces, std::vector<Boundary> &list_of_boundaries, Scalar_boundary_field &alpha_boundary, Vector_boundary_field &velocity_boundary, std::vector<Cell> &list_of_cells)                                                               
  { 
       alpha_reset_convection();  
@@ -1625,30 +1577,27 @@ void PV_coupling::alpha_combine_a_and_b_matrices()
                    }
                 }  
              
-              //std::cout<<grad_cx<<" "<<grad_cy<<" "<<grad_cz<<" "<<phi_c_tilda<<std::endl;
+
               double gamma_phi_c = phi_c_tilda/(0.5*0.5);
 
              if((phi_c_tilda >0)&&(phi_c_tilda <0.5))
                {
-                 //std::cout<<"Entered gamma range"<<std::endl;
-                //  interpolation_factor = (gamma_phi_c/2.0) + (1.0 -(gamma_phi_c/2.0));
-                 interpolation_factor = (gamma_phi_c/2.0);   
-                //                                   if(velocity_flux >= 0)
-                // {
-                //     interpolation_factor = 1;
-                // }
+                if(velocity_flux >= 0)
+                {
+                 interpolation_factor = 1.0 - (gamma_phi_c/2.0);   
+                }
 
-                // else
-                // {
-                //     interpolation_factor = 0;
-                // }
+                else
+                {
+                interpolation_factor = (gamma_phi_c/2.0);
+                }
+
                }
 
              if((phi_c_tilda >= 0.5) && (phi_c_tilda <1))
               {
-                     // std::cout<<"Entered cd range"<<std::endl;
-                  //interpolation_factor = dummy_interpolation_factor;
-                                  if(velocity_flux >= 0)
+                    
+                if(velocity_flux >= 0)
                 {
                     interpolation_factor = 0;
                 }
@@ -1675,64 +1624,7 @@ void PV_coupling::alpha_combine_a_and_b_matrices()
 
               }
 
-            // if((phi_c_tilda >0)||(phi_c_tilda <0.2))
-            //    {
-            //      //std::cout<<"Entered gamma range"<<std::endl;
-            //      double gamma_phi_c = phi_c_tilda/(0.25); 
-            //      interpolation_factor = (gamma_phi_c/2.0) + (1.0 -(gamma_phi_c/2.0));
-
-            //    }
-
-            //    else if((phi_c_tilda >= 0.25) || (phi_c_tilda <1))
-            //   {
-            //     if(velocity_flux >= 0)
-            //     {
-            //         interpolation_factor = 0;
-            //     }
-
-            //     else
-            //     {
-            //         interpolation_factor = 1;
-            //     }
-
-
-            //     //                 if(velocity_flux >= 0)
-            //     // {
-            //     //     interpolation_factor = 1;
-            //     // }
-
-            //     // else
-            //     // {
-            //     //     interpolation_factor = 0;
-            //     // }
-
-            //    }
-
-            //   else 
-            //    {
-            //     if(velocity_flux >= 0)
-            //     {
-            //         interpolation_factor = 1;
-            //     }
-
-            //     else
-            //     {
-            //         interpolation_factor = 0;
-            //     }
-
-            //    }
-
-            //   }
-
-                // if(velocity_flux >= 0)
-                // {
-                //     interpolation_factor = 1;
-                // }
-
-                // else
-                // {
-                //     interpolation_factor = 0;
-                // }
+           
                  if(list_of_faces[i].get_is_boundary_face() == true)
                 {
                      
@@ -1788,14 +1680,39 @@ void PV_coupling::alpha_combine_a_and_b_matrices()
     }  
 
 
-void PV_coupling::alpha_combine_and_solve_matrices()
+
+// Phase Fraction Continuity - Combining and Solving Matrices
+void PV_coupling::alpha_combine_and_solve_matrices(std::vector<Cell> list_of_cells)
 {
     alpha_combine_a_and_b_matrices();
 
-    alpha.scalar_field_values = alpha_a_matrix_combined.fullPivHouseholderQr().solve(alpha_b_vector_combined);
-    //alpha.scalar_field_values = alpha_a_matrix_combined.lu().solve(alpha_b_vector_combined);
+    int size = list_of_cells.size();
+
+    SpMat Au(size, size);
+
+
+    Au.reserve(Eigen::VectorXi::Constant(size,5));
+    for(int row=0; row<size; row++)
+    {
+      for(int col = 0; col < size; col++ )
+      {
+        if(fabs(alpha_a_matrix_combined(row,col)) > 1e-10)
+        {
+           Au.insert(row,col) = alpha_a_matrix_combined(row,col);
+        }
+      }
+    }
+    Au.makeCompressed();
+    
+    Eigen::BiCGSTAB<SpMat> solver;
+    solver.setTolerance(1e-10);
+    solver.compute(Au);
+
+    alpha.scalar_field_values = solver.solve(alpha_b_vector_combined);  
 }
 
+
+// Updating density and viscosity
 void PV_coupling::alpha_update_rho_nu(std::vector<Cell> &list_of_cells, double &rho_1, double &rho_2, double &nu_1, double &nu_2, double &mu_1, double &mu_2)
 {
     rho.set_old_scalar_field_values();
@@ -1814,754 +1731,8 @@ void PV_coupling::alpha_update_rho_nu(std::vector<Cell> &list_of_cells, double &
     }
 }
 
-void PV_coupling::alpha_output_scalar_fields_to_file(std::vector<double> &x_distance, std::vector<double> &y_distance, std::vector<Cell> &list_of_cells, int &iteration_no)
-{
-     
-    //  std::ofstream alpha_field_profiles_10("alpha_10.txt");
-    //  std::ofstream alpha_field_profiles_20("alpha_20.txt");
-    //  std::ofstream alpha_field_profiles_30("alpha_30.txt");
-    //  std::ofstream alpha_field_profiles_40("alpha_40.txt");
-    //  std::ofstream alpha_field_profiles_50("alpha_50.txt");
-    //  std::ofstream alpha_field_profiles_60("alpha_60.txt");
-    //  std::ofstream alpha_field_profiles_70("alpha_70.txt");
-    //  std::ofstream alpha_field_profiles_80("alpha_80.txt");
-    //  std::ofstream alpha_field_profiles_90("alpha_90.txt");
-    //  std::ofstream alpha_field_profiles_100("alpha_100.txt");
-    //  std::ofstream alpha_field_profiles_110("alpha_110.txt");
-    //  std::ofstream alpha_field_profiles_120("alpha_120.txt");
-    //  std::ofstream alpha_field_profiles_130("alpha_130.txt");
-    //  std::ofstream alpha_field_profiles_140("alpha_140.txt");
-    //  std::ofstream alpha_field_profiles_150("alpha_150.txt");
-    //  std::ofstream alpha_field_profiles_160("alpha_160.txt");
-    //  std::ofstream alpha_field_profiles_170("alpha_170.txt");
-    //  std::ofstream alpha_field_profiles_180("alpha_180.txt");
-    //  std::ofstream alpha_field_profiles_190("alpha_190.txt");
-    //  std::ofstream alpha_field_profiles_200("alpha_200.txt");
-    //  std::ofstream alpha_field_profiles_210("alpha_210.txt");
-    //  std::ofstream alpha_field_profiles_220("alpha_220.txt");
-    //  std::ofstream alpha_field_profiles_230("alpha_230.txt");
-    //  std::ofstream alpha_field_profiles_240("alpha_240.txt");
-    //  std::ofstream alpha_field_profiles_250("alpha_250.txt");
-    //  std::ofstream alpha_field_profiles_260("alpha_260.txt");
-    //  std::ofstream alpha_field_profiles_270("alpha_270.txt");
-    //  std::ofstream alpha_field_profiles_280("alpha_280.txt");
-    //  std::ofstream alpha_field_profiles_290("alpha_290.txt");
-    //  std::ofstream alpha_field_profiles_300("alpha_300.txt");
 
-
-    if(iteration_no == 1)
-      {  std::ofstream alpha_field_profiles_1("alpha_1.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1.close();
-      }  
-
-     if(iteration_no == 10)
-      {std::ofstream alpha_field_profiles_10("alpha_10.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_10<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_10.close();
-      } 
-
-          if(iteration_no == 20)
-      {std::ofstream alpha_field_profiles_20("alpha_20.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_20<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_20.close();
-      } 
-
-          if(iteration_no == 30)
-      {std::ofstream alpha_field_profiles_30("alpha_30.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_30<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_30.close();
-      } 
-
-          if(iteration_no == 40)
-      {std::ofstream alpha_field_profiles_40("alpha_40.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_40<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_40.close();
-      } 
-
-          if(iteration_no == 50)
-      {std::ofstream alpha_field_profiles_50("alpha_50.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_50<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_50.close();
-      } 
-
-          if(iteration_no == 60)
-      {std::ofstream alpha_field_profiles_60("alpha_60.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_60<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_60.close();
-      } 
-
-          if(iteration_no == 70)
-      {std::ofstream alpha_field_profiles_70("alpha_70.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_70<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_70.close();
-      } 
-
-          if(iteration_no == 80)
-      {std::ofstream alpha_field_profiles_80("alpha_80.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_80<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_80.close();
-      } 
-
-          if(iteration_no == 90)
-      {std::ofstream alpha_field_profiles_90("alpha_90.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_90<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_90.close();
-      } 
-
-
-                if(iteration_no == 100)
-      {std::ofstream alpha_field_profiles_100("alpha_100.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_100<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_100.close();
-      } 
-
-                if(iteration_no == 110)
-      {std::ofstream alpha_field_profiles_110("alpha_110.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_110<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_110.close();
-      } 
-
-                if(iteration_no == 120)
-      {std::ofstream alpha_field_profiles_120("alpha_120.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_120<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_120.close();
-      } 
-
-                if(iteration_no == 130)
-      {std::ofstream alpha_field_profiles_130("alpha_130.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_130<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_130.close();
-      } 
-
-                if(iteration_no == 140)
-      {std::ofstream alpha_field_profiles_140("alpha_140.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_140<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_140.close();
-      } 
-
-                if(iteration_no == 150)
-      {std::ofstream alpha_field_profiles_150("alpha_150.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_150<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_150.close();
-      } 
-
-                if(iteration_no == 160)
-      {std::ofstream alpha_field_profiles_160("alpha_160.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_160<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_160.close();
-      } 
-
-                if(iteration_no == 170)
-      {std::ofstream alpha_field_profiles_170("alpha_170.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_170<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_170.close();
-      } 
-
-                if(iteration_no == 180)
-      {std::ofstream alpha_field_profiles_180("alpha_180.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_180<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_180.close();
-      } 
-
-                if(iteration_no == 190)
-      {std::ofstream alpha_field_profiles_190("alpha_190.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_190<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_190.close();
-      } 
-
-                if(iteration_no == 200)
-      {std::ofstream alpha_field_profiles_200("alpha_200.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_200<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_200.close();
-      } 
-
-                      if(iteration_no == 210)
-      {std::ofstream alpha_field_profiles_210("alpha_210.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_210<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_210.close();
-      } 
-
-                      if(iteration_no == 220)
-      {std::ofstream alpha_field_profiles_220("alpha_220.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_220<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_220.close();
-      } 
-
-                      if(iteration_no == 230)
-      {std::ofstream alpha_field_profiles_230("alpha_230.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_230<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_230.close();
-      } 
-
-                      if(iteration_no == 240)
-      {std::ofstream alpha_field_profiles_240("alpha_240.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_240<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_240.close();
-      } 
-
-                      if(iteration_no == 250)
-      {std::ofstream alpha_field_profiles_250("alpha_250.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_250<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_250.close();
-      } 
-
-                            if(iteration_no == 260)
-      {std::ofstream alpha_field_profiles_260("alpha_260.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_260<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_260.close();
-      } 
-
-                            if(iteration_no == 270)
-      {std::ofstream alpha_field_profiles_270("alpha_270.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_270<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_270.close();
-      } 
-
-                            if(iteration_no == 280)
-      {std::ofstream alpha_field_profiles_280("alpha_280.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_280<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_280.close();
-      } 
-
-                            if(iteration_no == 290)
-      {std::ofstream alpha_field_profiles_290("alpha_290.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_290<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_290.close();
-      } 
-
-                            if(iteration_no == 300)
-      {std::ofstream alpha_field_profiles_300("alpha_300.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_300<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_300.close();
-      } 
-
-                                  if(iteration_no == 400)
-      {std::ofstream alpha_field_profiles_400("alpha_400.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_400<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_400.close();
-      } 
-                                  if(iteration_no == 600)
-      {std::ofstream alpha_field_profiles_600("alpha_600.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_600<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_600.close();
-      } 
-                                  if(iteration_no == 800)
-      {std::ofstream alpha_field_profiles_800("alpha_800.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_800<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_800.close();
-      } 
-                                  if(iteration_no == 1000)
-      {std::ofstream alpha_field_profiles_1000("alpha_1000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1000.close();
-      } 
-                                  if(iteration_no == 1100)
-      {std::ofstream alpha_field_profiles_1100("alpha_1100.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1100<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1100.close();
-      } 
-                                  if(iteration_no == 1200)
-      {std::ofstream alpha_field_profiles_1200("alpha_1200.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1200<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1200.close();
-      } 
-                                  if(iteration_no == 1300)
-      {std::ofstream alpha_field_profiles_1300("alpha_1300.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1300<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1300.close();
-      } 
-                                  if(iteration_no == 1500)
-      {std::ofstream alpha_field_profiles_1500("alpha_1500.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1500<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1500.close();
-      } 
-                                  if(iteration_no == 1700)
-      {std::ofstream alpha_field_profiles_1700("alpha_1700.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_1700<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_1700.close();
-      } 
-                                  if(iteration_no == 2000)
-      {std::ofstream alpha_field_profiles_2000("alpha_2000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_2000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_2000.close();
-      } 
-
-                                        if(iteration_no == 3000)
-      {std::ofstream alpha_field_profiles_3000("alpha_3000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_3000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_3000.close();
-      } 
-
-                                        if(iteration_no == 4000)
-      {std::ofstream alpha_field_profiles_4000("alpha_4000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_4000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_4000.close();
-      } 
-
-                                              if(iteration_no == 5000)
-      {std::ofstream alpha_field_profiles_5000("alpha_5000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_5000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_5000.close();
-      } 
-
-                                                    if(iteration_no == 6000)
-      {std::ofstream alpha_field_profiles_6000("alpha_6000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_6000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_6000.close();
-      } 
-                                                          if(iteration_no == 6500)
-      {std::ofstream alpha_field_profiles_6500("alpha_6500.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_6500<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_6500.close();
-      } 
-
-                                                          if(iteration_no == 7000)
-      {std::ofstream alpha_field_profiles_7000("alpha_7000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_7000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_7000.close();
-      } 
-
-      if(iteration_no == 7500)
-      {std::ofstream alpha_field_profiles_7500("alpha_7500.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_7500<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_7500.close();
-      } 
-
-                                                          if(iteration_no == 8000)
-      {std::ofstream alpha_field_profiles_8000("alpha_8000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_8000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_8000.close();
-      } 
-
-                                                          if(iteration_no == 8500)
-      {std::ofstream alpha_field_profiles_8500("alpha_8500.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_8500<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_8500.close();
-      } 
-
-                                                          if(iteration_no == 9000)
-      {std::ofstream alpha_field_profiles_9000("alpha_9000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_9000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_9000.close();
-      } 
-
-                                                          if(iteration_no == 9500)
-      {std::ofstream alpha_field_profiles_9500("alpha_9500.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_9500<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_9500.close();
-      } 
-
-                                                                if(iteration_no == 10000)
-      {std::ofstream alpha_field_profiles_10000("alpha_10000.txt");
-        for(int i=0; i<y_distance.size(); i++)
-         {
-              for(int j=0; j<x_distance.size(); j++)
-              {
-                double cell_v = list_of_cells[j + i*x_distance.size()].get_cell_volume();
-                alpha_field_profiles_10000<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<alpha.scalar_field_values(j + i*x_distance.size())<<std::endl;
-              }
-         }
-         alpha_field_profiles_10000.close();
-      } 
-        
-        // alpha_field_profiles_10.close();
-        // alpha_field_profiles_20.close();
-        // alpha_field_profiles_30.close();
-        // alpha_field_profiles_40.close();
-        // alpha_field_profiles_50.close();
-        // alpha_field_profiles_60.close();
-        // alpha_field_profiles_70.close();
-        // alpha_field_profiles_80.close();
-        // alpha_field_profiles_90.close();
-        // alpha_field_profiles_100.close();
-        // alpha_field_profiles_110.close();
-        // alpha_field_profiles_120.close();
-        // alpha_field_profiles_130.close();
-        // alpha_field_profiles_140.close();
-        // alpha_field_profiles_150.close();
-        // alpha_field_profiles_160.close();
-        // alpha_field_profiles_170.close();
-        // alpha_field_profiles_180.close();
-        // alpha_field_profiles_190.close();
-        // alpha_field_profiles_200.close();
-        // alpha_field_profiles_210.close();
-        // alpha_field_profiles_220.close();
-        // alpha_field_profiles_230.close();
-        // alpha_field_profiles_240.close();  
-        // alpha_field_profiles_250.close();
-        // alpha_field_profiles_260.close();
-        // alpha_field_profiles_270.close();
-        // alpha_field_profiles_280.close();
-        // alpha_field_profiles_290.close();
-        // alpha_field_profiles_300.close();
-} 
-
-
+// // Phase Fraction Continuity - Matrix coefficients
 void PV_coupling::alpha_output_scalar_matrix_coefficients_to_file(double total_cells)
 {
      std::ofstream alpha_convection_coeffs_a("alpha_convection_coeffs_a.txt");
@@ -2612,6 +1783,8 @@ void PV_coupling::alpha_output_scalar_matrix_coefficients_to_file(double total_c
    alpha_source_coeffs_b.close();
 }
 
+
+//Courant number display
 void PV_coupling::display_courant_number_details(std::vector<Cell>&list_of_cells, std::ofstream &file_courant_minmax, std::ofstream &file_courant_x_minmax,std::ofstream &file_courant_y_minmax)
 {
     std::ofstream file_courant("courant.txt");
@@ -2692,10 +1865,12 @@ void PV_coupling::display_courant_number_details(std::vector<Cell>&list_of_cells
 }
 
 
+
+// Function to output velocity, phase fraction and pressure to data files at regular pre-set intervals
 void PV_coupling::alpha_and_velocity_output_vector_field_to_file(std::vector<double> x_distance, std::vector<double> y_distance, int iteration_no, int output_interval)
 {
      if((iteration_no % output_interval) == 0)
-    {
+    { 
       std::string str_num_vx = std::to_string(iteration_no) + "_vx.txt";
       std::string str_num_vy = std::to_string(iteration_no) + "_vy.txt";
       std::string str_num_v_mag = std::to_string(iteration_no) + "_v_mag.txt";
@@ -2731,6 +1906,7 @@ void PV_coupling::alpha_and_velocity_output_vector_field_to_file(std::vector<dou
               for(int j=0; j<x_distance.size(); j++)
               {  
                 vector_field_profiles_x<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<velocity.vector_field_values_x(j + i*x_distance.size())<<std::endl;
+                //std::cout<<x_distance[j]<<"\t"<<y_distance[i]<<"\t"<<velocity.vector_field_values_x(j + i*x_distance.size())<<std::endl;
               }
          }
 
@@ -2971,3 +2147,4 @@ void PV_coupling::alpha_and_velocity_output_vector_field_to_file(std::vector<dou
          pressure_bottom.close();
     }
 } 
+

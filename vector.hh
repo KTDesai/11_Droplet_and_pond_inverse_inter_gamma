@@ -18,6 +18,7 @@ class Vector
     Vector cross_product(Vector &object);
     double magnitude_of_vector();
 
+    // Operator Overloading
     Vector& operator=(const Vector &object);
     Vector operator+(Vector object);
     Vector operator-(Vector object);
